@@ -1,0 +1,32 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+*.pyo
+*$py.class
+*.so
+build/
+dist/
+wheels/
+*.egg-info
+.eggs/
+*.egg
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+*.log
+*.tmp

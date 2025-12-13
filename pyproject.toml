@@ -1,0 +1,28 @@
+[project]
+name = "dev-scripts"
+version = "0.1.0"
+description = "Personal development scripts collection"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "beautifulsoup4>=4.14.3",
+    "httpx[http2]>=0.28.1",
+    "requests>=2.32.5",
+    "rich>=14.2.0",
+]
+
+[project.scripts]
+ms-download = "scripts.download.ms_downloader:main"
+
+[tool.uv]
+dev-dependencies = [
+    "ruff>=0.8.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = ["E501"]
