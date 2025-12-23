@@ -7,6 +7,8 @@
 ```text
 dev_scripts/
 ├── scripts/                           # 脚本目录
+│   ├── cli.py                        # 统一 CLI 入口
+│   ├── config_wizard.py              # 交互式配置向导
 │   ├── download/                     # 下载相关工具
 │   │   └── ms_downloader.py          # MindSpore 包下载器
 │   ├── automation/                   # 自动化脚本 (待添加)
@@ -36,36 +38,32 @@ uv pip install -e .
 .venv\Scripts\Activate.ps1
 ```
 
-## 📜 脚本列表
+## 📜 使用指南
 
-### Download 下载工具
+### 统一 CLI 入口
 
-| 脚本 | 说明 |
-|------|------|
-| `ms_downloader.py` | MindSpore nightly/master 构建包下载器，支持断点续传、进度显示 |
-
-#### ms_downloader.py 使用示例
+安装后可以使用 `dev-scripts` 命令访问所有功能：
 
 ```bash
 # 查看帮助
-ms-download --help
+dev-scripts --help
 
-# 使用日期范围下载
-ms-download --start_date 20251201 --end_date 20251215
+# 运行配置向导
+dev-scripts config-wizard
 
-# 使用快捷日期（最近7天）
-ms-download --last 7days
-
-# 使用快捷日期（最近2周，指定Python版本）
-ms-download --last 2weeks --python_version cp310
-
-# 不安装命令，直接运行脚本
-python scripts/download/ms_downloader.py --last 7days
+# 下载 MindSpore 包
+dev-scripts ms-download --last 7days
 ```
 
-#### 配置文件
+### 配置文件
 
-复制配置文件模板并修改默认值：
+使用交互式配置向导生成配置文件：
+
+```bash
+dev-scripts config-wizard
+```
+
+或手动复制配置文件模板：
 
 ```bash
 # 复制示例配置
@@ -77,14 +75,40 @@ cp .dev_scripts_config.yml.example ~/.dev_scripts_config.yml
 
 配置文件支持设置默认参数（如下载目录、架构、并发数等），避免每次输入。
 
+### Download 下载工具
+
+| 命令 | 说明 |
+|------|------|
+| `ms-download` | MindSpore nightly/master 构建包下载器，支持断点续传、进度显示 |
+
+#### 使用示例
+
+```bash
+# 使用快捷日期（最近7天）
+dev-scripts ms-download --last 7days
+
+# 使用日期范围
+dev-scripts ms-download --start_date 20251201 --end_date 20251215
+
+# 使用快捷日期（最近2周，指定Python版本）
+dev-scripts ms-download --last 2weeks --python_version cp310
+
+# 预览将要下载的文件
+dev-scripts ms-download --last 1day --dry_run
+
+# 也可直接使用 ms-download 命令
+ms-download --last 7days
+```
+
 ## 🛠️ 开发指南
 
 ### 添加新脚本
 
 1. 根据脚本功能选择或创建对应的分类目录
 2. 在脚本开头添加文档字符串说明用途
-3. 如需命令行入口，在 `pyproject.toml` 的 `[project.scripts]` 中添加
-4. 更新本 README 的脚本列表
+3. 在 `scripts/cli.py` 中添加新的子命令
+4. 在 `pyproject.toml` 的 `[project.scripts]` 中更新（如需独立命令）
+5. 更新本 README 的脚本列表
 
 ### 分类建议
 

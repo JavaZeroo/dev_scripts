@@ -13,6 +13,7 @@ dependencies = [
 ]
 
 [project.scripts]
+dev-scripts = "scripts.cli:main"
 ms-download = "scripts.download.ms_downloader:main"
 
 [tool.uv]
