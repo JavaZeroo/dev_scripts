@@ -6,13 +6,14 @@
 
 ```text
 dev_scripts/
-├── scripts/                    # 脚本目录
-│   ├── download/              # 下载相关工具
-│   │   └── ms_downloader.py   # MindSpore 包下载器
-│   ├── automation/            # 自动化脚本 (待添加)
-│   ├── data/                  # 数据处理工具 (待添加)
-│   └── utils/                 # 通用工具函数 (待添加)
-├── pyproject.toml             # 项目配置
+├── scripts/                           # 脚本目录
+│   ├── download/                     # 下载相关工具
+│   │   └── ms_downloader.py          # MindSpore 包下载器
+│   ├── automation/                   # 自动化脚本 (待添加)
+│   ├── data/                         # 数据处理工具 (待添加)
+│   └── utils/                        # 通用工具函数 (待添加)
+├── .dev_scripts_config.yml.example   # 配置文件示例
+├── pyproject.toml                    # 项目配置
 └── README.md
 ```
 
@@ -23,6 +24,9 @@ dev_scripts/
 ```bash
 # 使用 uv 创建虚拟环境并安装依赖
 uv sync
+
+# 安装为全局命令（可选）
+uv pip install -e .
 ```
 
 ### 激活环境
@@ -44,11 +48,34 @@ uv sync
 
 ```bash
 # 查看帮助
-python scripts/download/ms_downloader.py --help
+ms-download --help
 
-# 下载最新的 nightly 包
-python scripts/download/ms_downloader.py
+# 使用日期范围下载
+ms-download --start_date 20251201 --end_date 20251215
+
+# 使用快捷日期（最近7天）
+ms-download --last 7days
+
+# 使用快捷日期（最近2周，指定Python版本）
+ms-download --last 2weeks --python_version cp310
+
+# 不安装命令，直接运行脚本
+python scripts/download/ms_downloader.py --last 7days
 ```
+
+#### 配置文件
+
+复制配置文件模板并修改默认值：
+
+```bash
+# 复制示例配置
+cp .dev_scripts_config.yml.example .dev_scripts_config.yml
+
+# 或复制到用户目录（全局生效）
+cp .dev_scripts_config.yml.example ~/.dev_scripts_config.yml
+```
+
+配置文件支持设置默认参数（如下载目录、架构、并发数等），避免每次输入。
 
 ## 🛠️ 开发指南
 
@@ -56,7 +83,8 @@ python scripts/download/ms_downloader.py
 
 1. 根据脚本功能选择或创建对应的分类目录
 2. 在脚本开头添加文档字符串说明用途
-3. 更新本 README 的脚本列表
+3. 如需命令行入口，在 `pyproject.toml` 的 `[project.scripts]` 中添加
+4. 更新本 README 的脚本列表
 
 ### 分类建议
 
@@ -74,6 +102,7 @@ python scripts/download/ms_downloader.py
 - httpx[http2]
 - requests
 - rich
+- pyyaml
 
 ## 📄 License
 

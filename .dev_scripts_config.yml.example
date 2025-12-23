@@ -1,0 +1,42 @@
+# dev-scripts 配置文件示例
+# 复制此文件为 .dev_scripts_config.yml (项目目录) 或 ~/.dev_scripts_config.yml (用户目录)
+
+ms_downloader:
+  # 下载保存目录
+  download_dir: "downloads"
+
+  # 并发下载线程数
+  max_workers: 4
+
+  # Python 版本过滤（可选：cp39, cp310, cp311, cp312 等）
+  python_version: null
+
+  # 架构目录（aarch64, x86_64 等）
+  arch: "aarch64"
+
+  # variant 目录
+  variant: "unified"
+
+  # 构建目录前缀（master_, nightly_ 等）
+  build_prefix: "master_"
+
+  # 根目录 URL
+  base_url: "https://repo.mindspore.cn/mindspore/mindspore/version/"
+
+  # 请求与下载最大重试次数
+  retries: 4
+
+  # 连接超时秒数
+  connect_timeout: 10.0
+
+  # 读取超时秒数
+  read_timeout: 60.0
+
+  # 启用 HTTP/2
+  http2: false
+
+  # 跳过 TLS 证书校验（不安全，仅用于测试）
+  insecure: false
+
+  # 只列出将要下载的文件，不实际下载
+  dry_run: false

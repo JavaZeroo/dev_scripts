@@ -18,12 +18,18 @@ MindSpore nightly/master 构建包下载器（优化&兼容版）
 import argparse
 import os
 import sys
+import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import List, Tuple, Optional
 
 import httpx
+import yaml
+
+# 全局中断标志
+_shutdown_event = threading.Event()
 from bs4 import BeautifulSoup
 from rich.logging import RichHandler
 from rich.progress import (
@@ -39,6 +45,13 @@ import requests  # noqa: F401
 
 requests.packages.urllib3.disable_warnings(InsecureRequestWarning)
 
+
+def _signal_handler(signum, frame):
+    """处理 Ctrl+C 信号，设置全局中断标志"""
+    logger.warning("\n收到中断信号，正在停止下载...")
+    _shutdown_event.set()
+
+
 # ------------------ 日志 ------------------
 logging.basicConfig(
     level=logging.INFO,
@@ -50,25 +63,74 @@ logger = logging.getLogger("mindspore_download")
 
 # ------------------ 常量/配置 ------------------
 DEFAULT_BASE_URL = "https://repo.mindspore.cn/mindspore/mindspore/version/"
+CONFIG_FILE_PATHS = [
+    Path.cwd() / ".dev_scripts_config.yml",
+    Path.home() / ".dev_scripts_config.yml",
+]
 
 
 @dataclass
 class Config:
-    base_url: str
-    start_date: str
-    end_date: str
-    download_dir: str
-    max_workers: int
-    python_version: Optional[str]
-    arch: str
-    variant: str
-    build_prefix: str
-    dry_run: bool
-    retries: int
-    connect_timeout: float
-    read_timeout: float
-    http2: bool
-    insecure: bool
+    base_url: str = DEFAULT_BASE_URL
+    start_date: str = ""
+    end_date: str = ""
+    download_dir: str = "downloads"
+    max_workers: int = 4
+    python_version: Optional[str] = None
+    arch: str = "aarch64"
+    variant: str = "unified"
+    build_prefix: str = "master_"
+    dry_run: bool = False
+    retries: int = 4
+    connect_timeout: float = 10.0
+    read_timeout: float = 60.0
+    http2: bool = False
+    insecure: bool = False
+
+
+def load_config_from_file() -> dict:
+    """从配置文件加载默认值"""
+    for config_path in CONFIG_FILE_PATHS:
+        if config_path.exists():
+            try:
+                with open(config_path, "r", encoding="utf-8") as f:
+                    data = yaml.safe_load(f)
+                    if data and "ms_downloader" in data:
+                        logger.info(f"加载配置文件: {config_path}")
+                        return data["ms_downloader"]
+            except Exception as e:
+                logger.warning(f"读取配置文件失败 {config_path}: {e}")
+    return {}
+
+
+def parse_last_argument(last_str: str) -> Tuple[str, str]:
+    """
+    解析 --last 参数，返回 (start_date, end_date)
+    支持: "7days", "2weeks", "3months"
+    """
+    last_str = last_str.lower().strip()
+
+    # 提取数字和单位
+    import re
+    match = re.match(r"(\d+)\s*(day|days|week|weeks|month|months)", last_str)
+    if not match:
+        raise ValueError(f"无法解析 --last 参数: {last_str}")
+
+    count = int(match.group(1))
+    unit = match.group(2)
+
+    end_date = datetime.now()
+    if unit.startswith("day"):
+        start_date = end_date - timedelta(days=count)
+    elif unit.startswith("week"):
+        start_date = end_date - timedelta(weeks=count)
+    elif unit.startswith("month"):
+        # 近似计算，每月30天
+        start_date = end_date - timedelta(days=count * 30)
+    else:
+        raise ValueError(f"不支持的时间单位: {unit}")
+
+    return start_date.strftime("%Y%m%d"), end_date.strftime("%Y%m%d")
 
 
 # ------------------ 工具函数 ------------------
@@ -238,6 +300,10 @@ def download_one(
     cfg: Config,
     remote_size: Optional[int],
 ) -> None:
+    # 检查是否已收到中断信号
+    if _shutdown_event.is_set():
+        return
+
     # 断点续传
     need, have = needs_download(save_path, remote_size)
     if not need:
@@ -250,6 +316,10 @@ def download_one(
     headers = {}
     if have > 0:
         headers["Range"] = f"bytes={have}-"
+        # 更新进度条显示已下载的部分
+        progress.update(task_id, completed=have)
+        if total_task_id:
+            progress.update(total_task_id, advance=have)
 
     attempts = cfg.retries
     for attempt in range(1, attempts + 1):
@@ -261,11 +331,33 @@ def download_one(
                 timeout=httpx.Timeout(connect=cfg.connect_timeout, read=cfg.read_timeout, write=None, pool=None),
             ) as r:
                 r.raise_for_status()
-                mode = "ab" if "Range" in headers else "wb"
+                
+                # 检查服务器是否支持断点续传
+                # 206 = Partial Content，表示支持 Range
+                # 200 = OK，表示不支持 Range，返回的是完整文件
+                if have > 0 and r.status_code == 200:
+                    # 服务器不支持 Range，需要从头下载
+                    logger.warning(f"服务器不支持断点续传，从头下载: {os.path.basename(save_path)}")
+                    mode = "wb"
+                    # 重置进度条
+                    progress.update(task_id, completed=0)
+                    if total_task_id:
+                        progress.update(total_task_id, advance=-have)
+                elif have > 0 and r.status_code == 206:
+                    # 服务器支持断点续传
+                    mode = "ab"
+                    logger.info(f"断点续传: {os.path.basename(save_path)} (已有 {have} 字节)")
+                else:
+                    mode = "wb"
+                    
                 with open(save_path, mode) as f:
                     for chunk in r.iter_bytes(chunk_size=1 << 15):  # 32 KiB
                         if not chunk:
                             continue
+                        # 检查中断信号
+                        if _shutdown_event.is_set():
+                            logger.warning(f"下载被中断: {url}")
+                            return
                         f.write(chunk)
                         progress.update(task_id, advance=len(chunk))
                         if total_task_id:
@@ -282,28 +374,76 @@ def download_one(
 
 # ------------------ 主流程 ------------------
 def main():
-    parser = argparse.ArgumentParser(description="下载 MindSpore master/nightly 构建包（优化&兼容版）")
-    parser.add_argument("--start_date", required=True, help="起始日期 YYYYMMDD")
-    parser.add_argument("--end_date", required=True, help="结束日期 YYYYMMDD")
-    parser.add_argument("--download_dir", default="downloads", help="下载保存目录")
-    parser.add_argument("--num_workers", type=int, default=4, help="并发下载线程数")
-    parser.add_argument("--python_version", help="Python 版本过滤（如 cp39 / cp310 / cp311）")
-    parser.add_argument("--arch", default="aarch64", help="架构目录（默认 aarch64，可选 x86_64 等）")
-    parser.add_argument("--variant", default="unified", help="variant 目录（默认 unified）")
-    parser.add_argument("--build_prefix", default="master_", help="构建目录前缀（默认 master_，也可 nightly_ 等）")
-    parser.add_argument("--base_url", default=DEFAULT_BASE_URL, help="根目录 URL")
-    parser.add_argument("--dry_run", action="store_true", help="只列出将要下载的文件，不实际下载")
-    parser.add_argument("--retries", type=int, default=4, help="请求与下载最大重试次数")
-    parser.add_argument("--connect_timeout", type=float, default=10.0, help="连接超时秒数")
-    parser.add_argument("--read_timeout", type=float, default=60.0, help="读取超时秒数")
-    parser.add_argument("--http2", action="store_true", help="启用 HTTP/2（默认关闭；部分镜像不稳定时可关闭）")
-    parser.add_argument("--insecure", action="store_true", help="跳过 TLS 证书校验（不安全）")
+    # 加载配置文件中的默认值
+    config_defaults = load_config_from_file()
+
+    parser = argparse.ArgumentParser(
+        description="下载 MindSpore master/nightly 构建包（优化&兼容版）",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+示例:
+  # 使用日期范围
+  %(prog)s --start_date 20251201 --end_date 20251215
+
+  # 使用快捷日期（最近7天）
+  %(prog)s --last 7days
+
+  # 使用快捷日期（最近2周）
+  %(prog)s --last 2weeks --python_version cp310
+        """
+    )
+
+    # 日期参数（互斥）
+    date_group = parser.add_mutually_exclusive_group(required=True)
+    date_group.add_argument("--start_date", help="起始日期 YYYYMMDD")
+    date_group.add_argument("--end_date", help="结束日期 YYYYMMDD")
+    date_group.add_argument("--last", help="日期范围快捷方式，如 '7days', '2weeks', '3months'")
+
+    # 下载参数
+    parser.add_argument("--download_dir", default=config_defaults.get("download_dir", "downloads"),
+                        help="下载保存目录")
+    parser.add_argument("--num_workers", type=int, default=config_defaults.get("max_workers", 4),
+                        help="并发下载线程数")
+    parser.add_argument("--python_version", default=config_defaults.get("python_version"),
+                        help="Python 版本过滤（如 cp39 / cp310 / cp311）")
+
+    # 架构参数
+    parser.add_argument("--arch", default=config_defaults.get("arch", "aarch64"),
+                        help="架构目录（默认 aarch64，可选 x86_64 等）")
+    parser.add_argument("--variant", default=config_defaults.get("variant", "unified"),
+                        help="variant 目录（默认 unified）")
+    parser.add_argument("--build_prefix", default=config_defaults.get("build_prefix", "master_"),
+                        help="构建目录前缀（默认 master_，也可 nightly_ 等）")
+
+    # 网络参数
+    parser.add_argument("--base_url", default=config_defaults.get("base_url", DEFAULT_BASE_URL),
+                        help="根目录 URL")
+    parser.add_argument("--retries", type=int, default=config_defaults.get("retries", 4),
+                        help="请求与下载最大重试次数")
+    parser.add_argument("--connect_timeout", type=float, default=config_defaults.get("connect_timeout", 10.0),
+                        help="连接超时秒数")
+    parser.add_argument("--read_timeout", type=float, default=config_defaults.get("read_timeout", 60.0),
+                        help="读取超时秒数")
+    parser.add_argument("--http2", action="store_true", default=config_defaults.get("http2", False),
+                        help="启用 HTTP/2（默认关闭；部分镜像不稳定时可关闭）")
+    parser.add_argument("--insecure", action="store_true", default=config_defaults.get("insecure", False),
+                        help="跳过 TLS 证书校验（不安全）")
+    parser.add_argument("--dry_run", action="store_true", default=config_defaults.get("dry_run", False),
+                        help="只列出将要下载的文件，不实际下载")
+
     args = parser.parse_args()
+
+    # 处理 --last 参数
+    if args.last:
+        start_date, end_date = parse_last_argument(args.last)
+    else:
+        start_date = args.start_date
+        end_date = args.end_date
 
     cfg = Config(
         base_url=args.base_url,
-        start_date=args.start_date,
-        end_date=args.end_date,
+        start_date=start_date,
+        end_date=end_date,
         download_dir=args.download_dir,
         max_workers=max(1, args.num_workers),
         python_version=args.python_version,
@@ -391,19 +531,47 @@ def main():
                 task_id = progress.add_task(desc, total=size if size else None)
                 tasks_meta.append((url, save_path, task_id, size, date, build))
 
-            from concurrent.futures import ThreadPoolExecutor, as_completed
-            with ThreadPoolExecutor(max_workers=cfg.max_workers) as ex:
-                futs = []
-                for url, save_path, task_id, size, _, _ in tasks_meta:
-                    futs.append(
-                        ex.submit(
-                            download_one, client, url, save_path, task_id, progress, total_task_id, cfg, size
-                        )
-                    )
-                for f in as_completed(futs):
-                    _ = f.result()
+            # 使用守护线程，主线程退出时会强制终止
+            threads = []
+            for url, save_path, task_id, size, _, _ in tasks_meta:
+                t = threading.Thread(
+                    target=download_one,
+                    args=(client, url, save_path, task_id, progress, total_task_id, cfg, size),
+                    daemon=True  # 守护线程，主线程退出时自动终止
+                )
+                threads.append(t)
 
-    logger.info("所有下载任务完成 ✅")
+            # 控制并发数：使用信号量
+            semaphore = threading.Semaphore(cfg.max_workers)
+
+            def run_with_semaphore(t):
+                with semaphore:
+                    if not _shutdown_event.is_set():
+                        t.run()
+
+            actual_threads = []
+            for t in threads:
+                wrapper = threading.Thread(target=run_with_semaphore, args=(t,), daemon=True)
+                wrapper.start()
+                actual_threads.append(wrapper)
+
+            # 等待所有线程完成，但允许 Ctrl+C 中断
+            try:
+                while any(t.is_alive() for t in actual_threads):
+                    # 短暂等待，让主线程能响应信号
+                    for t in actual_threads:
+                        t.join(timeout=0.1)
+                        if _shutdown_event.is_set():
+                            raise KeyboardInterrupt
+            except KeyboardInterrupt:
+                _shutdown_event.set()
+                logger.warning("\n正在强制停止...")
+
+    if _shutdown_event.is_set():
+        logger.warning("下载已被用户中断 ⚠️")
+        os._exit(1)  # 强制退出，不等待线程
+    else:
+        logger.info("所有下载任务完成 ✅")
 
 
 if __name__ == "__main__":
